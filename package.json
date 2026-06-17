@@ -1,0 +1,21 @@
+{
+  "name": "silent-print-agent",
+  "version": "1.0.0",
+  "description": "Silent local printing bridge for web applications",
+  "main": "server.js",
+  "bin": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "build:win": "pkg . --targets node18-win-x64 --output dist/print-agent.exe",
+    "build:mac": "pkg . --targets node18-macos-x64 --output dist/print-agent"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "express": "^4.19.2",
+    "pdf-to-printer": "^5.6.0",
+    "unix-print": "^1.4.0"
+  },
+  "devDependencies": {
+    "pkg": "^5.8.1"
+  }
+}
