@@ -124,6 +124,36 @@ if ([RawPrn]::OpenPrinter('${printer_name}', [ref]$h, [IntPtr]::Zero)) {
   }
 });
 
+// Add this endpoint to your local server.js
+app.get("/printers", (req, res) => {
+  if (os.platform() === "win32") {
+    // Native PowerShell command to get local printer names cleanly
+    exec(
+      `powershell -Command "Get-CimInstance Win32_Printer | Select-Object -ExpandProperty Name"`,
+      (error, stdout, stderr) => {
+        if (error) {
+          return res.status(500).json({ success: false, error: error.message });
+        }
+        const printerList = stdout
+          .split(/\r?\n/)
+          .filter((name) => name.trim() !== "");
+        return res.json({ success: true, printers: printerList });
+      },
+    );
+  } else {
+    // macOS / Linux fallback via native lpstat
+    exec("lpstat -e", (error, stdout, stderr) => {
+      if (error) {
+        return res.json({ success: true, printers: [] });
+      }
+      const printerList = stdout
+        .split(/\r?\n/)
+        .filter((name) => name.trim() !== "");
+      return res.json({ success: true, printers: printerList });
+    });
+  }
+});
+
 app.get("/status", (req, res) => {
   res.json({ status: "online", platform: os.platform() });
 });
