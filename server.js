@@ -3,19 +3,17 @@ const cors = require("cors");
 const fs = require("fs");
 const path = require("path");
 const os = require("os");
-const pt = require("pdf-to-printer");
 const unixPrint = require("unix-print");
+const { exec } = require("child_process");
 
 const app = express();
 
-// Enable CORS so your production web app domain can communicate with localhost safely
 app.use(
   cors({
-    origin: "*", // In production, replace with your specific web app URL if desired
+    origin: "*",
   }),
 );
 
-// Set limit high enough to accept large high-res print/document payloads
 app.use(express.json({ limit: "100mb" }));
 
 app.post("/print", async (req, res) => {
@@ -31,44 +29,101 @@ app.post("/print", async (req, res) => {
       });
     }
 
-    // 1. Generate a temporary file path native to the OS
     const tempDir = os.tmpdir();
     tempFilePath = path.join(tempDir, `silent_job_${Date.now()}.bin`);
 
-    // 2. Convert base64 data back into raw binary buffer
     const buffer = Buffer.from(base64, "base64");
     fs.writeFileSync(tempFilePath, buffer);
 
-    // 3. Spool to OS Printer without dialog boxes or popups
     if (os.platform() === "win32") {
-      await pt.print(tempFilePath, { printer: printer_name });
+      const safePath = tempFilePath.replace(/\\/g, "\\\\");
+
+      const rawScript = `
+$b = [System.IO.File]::ReadAllBytes('${safePath}');
+$h = [IntPtr]::Zero;
+$add = @'
+using System;
+using System.Runtime.InteropServices;
+public class RawPrn {
+    [DllImport("winspool.Drv", SetLastError=true, CharSet=CharSet.Unicode)]
+    public static extern bool OpenPrinter(string name, out IntPtr h, IntPtr def);
+    [DllImport("winspool.Drv")] public static extern bool ClosePrinter(IntPtr h);
+    [DllImport("winspool.Drv", SetLastError=true, CharSet=CharSet.Unicode)]
+    public static extern bool StartDocPrinter(IntPtr h, Int32 lvl, [In]DOCINFO di);
+    [DllImport("winspool.Drv")] public static extern bool EndDocPrinter(IntPtr h);
+    [DllImport("winspool.Drv")] public static extern bool StartPagePrinter(IntPtr h);
+    [DllImport("winspool.Drv")] public static extern bool EndPagePrinter(IntPtr h);
+    [DllImport("winspool.Drv")] public static extern bool WritePrinter(IntPtr h, IntPtr b, Int32 c, out Int32 w);
+    [StructLayout(LayoutKind.Sequential, CharSet=CharSet.Unicode)]
+    public class DOCINFO { public string pDocName; public string pOutputFile; public string pDataType; }
+}
+'@;
+Add-Type -TypeDefinition $add -ErrorAction SilentlyContinue;
+if ([RawPrn]::OpenPrinter('${printer_name}', [ref]$h, [IntPtr]::Zero)) {
+    $di = New-Object RawPrn+DOCINFO; $di.pDocName = 'Receipt'; $di.pDataType = 'RAW';
+    if ([RawPrn]::StartDocPrinter($h, 1, $di)) {
+        if ([RawPrn]::StartPagePrinter($h)) {
+            $ptr = [System.Runtime.InteropServices.Marshal]::AllocCoTaskMem($b.Length);
+            [System.Runtime.InteropServices.Marshal]::Copy($b, 0, $ptr, $b.Length);
+            $w = 0; [RawPrn]::WritePrinter($h, $ptr, $b.Length, [ref]$w);
+            [System.Runtime.InteropServices.Marshal]::FreeCoTaskMem($ptr);
+            [RawPrn]::EndPagePrinter($h);
+        }
+        [RawPrn]::EndDocPrinter($h);
+    }
+    [RawPrn]::ClosePrinter($h);
+}`;
+
+      const scriptBuffer = Buffer.from(rawScript, "utf16le");
+      const encodedScript = scriptBuffer.toString("base64");
+
+      exec(
+        `powershell -NoProfile -EncodedCommand ${encodedScript}`,
+        (error, stdout, stderr) => {
+          if (tempFilePath && fs.existsSync(tempFilePath)) {
+            try {
+              fs.unlinkSync(tempFilePath);
+            } catch (e) {}
+          }
+
+          if (error) {
+            console.error("PowerShell RAW Spool Error:", error);
+            console.error("Stderr:", stderr);
+          } else {
+            console.log(
+              `Successfully spooled raw layout to Windows printer: ${printer_name}`,
+            );
+          }
+        },
+      );
+
+      return res.json({
+        success: true,
+        message: `Spool command sent to ${printer_name}`,
+      });
     } else {
-      // macOS and Linux uses CUPS subsystem
       await unixPrint.print(tempFilePath, printer_name);
-    }
 
-    // 4. Fire-and-forget cleanup of local disk space
-    if (fs.existsSync(tempFilePath)) {
-      fs.unlinkSync(tempFilePath);
-    }
+      if (tempFilePath && fs.existsSync(tempFilePath)) {
+        fs.unlinkSync(tempFilePath);
+      }
 
-    return res.json({
-      success: true,
-      message: `Successfully spooled to ${printer_name}`,
-    });
+      return res.json({
+        success: true,
+        message: `Successfully spooled to ${printer_name}`,
+      });
+    }
   } catch (error) {
     console.error("Printing Error:", error);
-
-    // Cleanup file if an exception occurred midway
     if (tempFilePath && fs.existsSync(tempFilePath)) {
-      fs.unlinkSync(tempFilePath);
+      try {
+        fs.unlinkSync(tempFilePath);
+      } catch (e) {}
     }
-
     return res.status(500).json({ success: false, error: error.message });
   }
 });
 
-// Health check endpoint to allow frontend to detect if the agent is open and running
 app.get("/status", (req, res) => {
   res.json({ status: "online", platform: os.platform() });
 });
