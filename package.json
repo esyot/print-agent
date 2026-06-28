@@ -11,6 +11,7 @@
   },
   "dependencies": {
     "cors": "^2.8.5",
+    "escpos-buffer": "^4.1.0",
     "express": "^4.19.2",
     "unix-print": "^1.0.0"
   },
