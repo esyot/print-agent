@@ -16,6 +16,89 @@ app.use(
 
 app.use(express.json({ limit: "100mb" }));
 
+// ==========================================
+// NEW: CUSTOMER DISPLAY ENDPOINT (COM3)
+// ==========================================
+app.post("/display", async (req, res) => {
+  try {
+    const { base64, text_line1, text_line2 } = req.body;
+    let rawBuffer;
+
+    if (base64) {
+      rawBuffer = Buffer.from(base64, "base64");
+    } else if (text_line1 !== undefined || text_line2 !== undefined) {
+      const clearScreen = Buffer.from([0x0c]); // Clear screen and home cursor
+
+      const line1 = (text_line1 || "").substring(0, 20).padEnd(20, " ");
+      const line2 = (text_line2 || "").substring(0, 20).padEnd(20, " ");
+      const combinedPayload = line1 + line2;
+
+      rawBuffer = Buffer.concat([clearScreen, Buffer.from(combinedPayload)]);
+    } else {
+      return res.status(400).json({
+        success: false,
+        error:
+          "Provide either a base64 payload, or text_line1 / text_line2 strings.",
+      });
+    }
+
+    if (os.platform() === "win32") {
+      const tempDir = os.tmpdir();
+      const tempDisplayPath = path.join(
+        tempDir,
+        `display_job_${Date.now()}.bin`,
+      );
+      fs.writeFileSync(tempDisplayPath, rawBuffer);
+
+      const safePath = tempDisplayPath.replace(/\\/g, "\\\\");
+
+      const serialScript = `
+$port = New-Object System.IO.Ports.SerialPort 'COM3', 9600, 'None', 8, 'One';
+$port.Open();
+$bytes = [System.IO.File]::ReadAllBytes('${safePath}');
+$port.Write($bytes, 0, $bytes.Length);
+$port.Close();
+`;
+
+      const scriptBuffer = Buffer.from(serialScript, "utf16le");
+      const encodedScript = scriptBuffer.toString("base64");
+
+      exec(
+        `powershell -NoProfile -EncodedCommand ${encodedScript}`,
+        (error, stdout, stderr) => {
+          if (fs.existsSync(tempDisplayPath)) {
+            try {
+              fs.unlinkSync(tempDisplayPath);
+            } catch (e) {}
+          }
+          if (error) {
+            console.error("Serial Port Display Error:", error);
+            return res
+              .status(500)
+              .json({ success: false, error: error.message });
+          }
+          console.log("Successfully pushed 40-character matrix to display.");
+        },
+      );
+
+      return res.json({
+        success: true,
+        message: "Display payload sent to COM3",
+      });
+    } else {
+      return res
+        .status(500)
+        .json({ success: false, error: "Platform not supported." });
+    }
+  } catch (error) {
+    console.error("Display Update Error:", error);
+    return res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// ==========================================
+// EXISTING: PRINTER LOGIC
+// ==========================================
 app.post("/print", async (req, res) => {
   let tempFilePath = null;
 
@@ -124,10 +207,8 @@ if ([RawPrn]::OpenPrinter('${printer_name}', [ref]$h, [IntPtr]::Zero)) {
   }
 });
 
-// Add this endpoint to your local server.js
 app.get("/printers", (req, res) => {
   if (os.platform() === "win32") {
-    // Native PowerShell command to get local printer names cleanly
     exec(
       `powershell -Command "Get-CimInstance Win32_Printer | Select-Object -ExpandProperty Name"`,
       (error, stdout, stderr) => {
@@ -141,7 +222,6 @@ app.get("/printers", (req, res) => {
       },
     );
   } else {
-    // macOS / Linux fallback via native lpstat
     exec("lpstat -e", (error, stdout, stderr) => {
       if (error) {
         return res.json({ success: true, printers: [] });
@@ -161,6 +241,6 @@ app.get("/status", (req, res) => {
 const PORT = 4444;
 app.listen(PORT, () => {
   console.log(`====================================================`);
-  console.log(` Silent Print Agent Active on http://localhost:${PORT}`);
+  console.log(` Print & Display Agent Active on http://localhost:${PORT}`);
   console.log(`====================================================`);
 });
