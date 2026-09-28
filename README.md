@@ -1,6 +1,6 @@
-# Silent Print Agent
+# Print Agent
 
-A lightweight, background Node.js Express server compiled into a standalone Windows executable (`.exe`). It exposes a local HTTP API to list printers and silently spool raw print payloads (like ESC/POS receipts, ZPL labels, or RAW binaries) directly to local or network printers.
+A lightweight, background Node.js Express server and can be compiled into a standalone Windows executable (`.exe`). It exposes a local HTTP API to list printers and silently spool raw print payloads (like ESC/POS receipts, ZPL labels, or RAW binaries) directly to local or network printers.
 
 ---
 
