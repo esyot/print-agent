@@ -3,8 +3,17 @@ const cors = require("cors");
 const fs = require("fs");
 const path = require("path");
 const os = require("os");
-const unixPrint = require("unix-print");
 const { exec } = require("child_process");
+
+// Optional: only require unix-print on non-Windows platforms
+let unixPrint = null;
+if (os.platform() !== "win32") {
+  try {
+    unixPrint = require("unix-print");
+  } catch (e) {
+    console.warn("unix-print not available on this platform.");
+  }
+}
 
 const app = express();
 
@@ -17,7 +26,27 @@ app.use(
 app.use(express.json({ limit: "100mb" }));
 
 // ==========================================
-// NEW: CUSTOMER DISPLAY ENDPOINT (COM3)
+// HELPER: Escape single quotes for PowerShell single-quoted strings
+// ==========================================
+function escapePS(str) {
+  return String(str).replace(/'/g, "''");
+}
+
+// ==========================================
+// HELPER: Run a PowerShell script encoded in UTF-16LE base64
+// ==========================================
+function runPowerShell(script, callback) {
+  const scriptBuffer = Buffer.from(script, "utf16le");
+  const encodedScript = scriptBuffer.toString("base64");
+  exec(
+    `powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand ${encodedScript}`,
+    { timeout: 30000 },
+    callback,
+  );
+}
+
+// ==========================================
+// DISPLAY ENDPOINT (COM3) — Windows 10 compatible
 // ==========================================
 app.post("/display", async (req, res) => {
   try {
@@ -42,54 +71,58 @@ app.post("/display", async (req, res) => {
       });
     }
 
-    if (os.platform() === "win32") {
-      const tempDir = os.tmpdir();
-      const tempDisplayPath = path.join(
-        tempDir,
-        `display_job_${Date.now()}.bin`,
-      );
-      fs.writeFileSync(tempDisplayPath, rawBuffer);
-
-      const safePath = tempDisplayPath.replace(/\\/g, "\\\\");
-
-      const serialScript = `
-$port = New-Object System.IO.Ports.SerialPort 'COM3', 9600, 'None', 8, 'One';
-$port.Open();
-$bytes = [System.IO.File]::ReadAllBytes('${safePath}');
-$port.Write($bytes, 0, $bytes.Length);
-$port.Close();
-`;
-
-      const scriptBuffer = Buffer.from(serialScript, "utf16le");
-      const encodedScript = scriptBuffer.toString("base64");
-
-      exec(
-        `powershell -NoProfile -EncodedCommand ${encodedScript}`,
-        (error, stdout, stderr) => {
-          if (fs.existsSync(tempDisplayPath)) {
-            try {
-              fs.unlinkSync(tempDisplayPath);
-            } catch (e) {}
-          }
-          if (error) {
-            console.error("Serial Port Display Error:", error);
-            return res
-              .status(500)
-              .json({ success: false, error: error.message });
-          }
-          console.log("Successfully pushed 40-character matrix to display.");
-        },
-      );
-
-      return res.json({
-        success: true,
-        message: "Display payload sent to COM3",
-      });
-    } else {
+    if (os.platform() !== "win32") {
       return res
         .status(500)
         .json({ success: false, error: "Platform not supported." });
     }
+
+    const tempDir = os.tmpdir();
+    const tempDisplayPath = path.join(tempDir, `display_job_${Date.now()}.bin`);
+    fs.writeFileSync(tempDisplayPath, rawBuffer);
+
+    const safePath = escapePS(tempDisplayPath);
+
+    const serialScript = `
+$ErrorActionPreference = 'Stop'
+try {
+    $port = New-Object System.IO.Ports.SerialPort 'COM3', 9600, 'None', 8, 'One'
+    $port.WriteTimeout = 5000
+    $port.Open()
+    $bytes = [System.IO.File]::ReadAllBytes('${safePath}')
+    $port.Write($bytes, 0, $bytes.Length)
+    $port.Close()
+    Write-Output 'OK'
+} catch {
+    Write-Error $_.Exception.Message
+    exit 1
+}
+`;
+
+    runPowerShell(serialScript, (error, stdout, stderr) => {
+      // Clean up temp file
+      if (fs.existsSync(tempDisplayPath)) {
+        try {
+          fs.unlinkSync(tempDisplayPath);
+        } catch (e) {}
+      }
+
+      if (error) {
+        console.error("Serial Port Display Error:", error.message);
+        console.error("Stderr:", stderr);
+        return res.status(500).json({
+          success: false,
+          error: error.message,
+          stderr: stderr ? stderr.trim() : undefined,
+        });
+      }
+
+      console.log("Successfully pushed 40-character matrix to display.");
+      return res.json({
+        success: true,
+        message: "Display payload sent to COM3",
+      });
+    });
   } catch (error) {
     console.error("Display Update Error:", error);
     return res.status(500).json({ success: false, error: error.message });
@@ -97,7 +130,7 @@ $port.Close();
 });
 
 // ==========================================
-// EXISTING: PRINTER LOGIC
+// PRINTER ENDPOINT — Windows 10 compatible RAW spooling
 // ==========================================
 app.post("/print", async (req, res) => {
   let tempFilePath = null;
@@ -119,12 +152,15 @@ app.post("/print", async (req, res) => {
     fs.writeFileSync(tempFilePath, buffer);
 
     if (os.platform() === "win32") {
-      const safePath = tempFilePath.replace(/\\/g, "\\\\");
+      const safePath = escapePS(tempFilePath);
+      const safePrinter = escapePS(printer_name);
 
       const rawScript = `
-$b = [System.IO.File]::ReadAllBytes('${safePath}');
-$h = [IntPtr]::Zero;
-$add = @'
+$ErrorActionPreference = 'Stop'
+try {
+    $b = [System.IO.File]::ReadAllBytes('${safePath}')
+    $h = [IntPtr]::Zero
+    $add = @'
 using System;
 using System.Runtime.InteropServices;
 public class RawPrn {
@@ -140,62 +176,98 @@ public class RawPrn {
     [StructLayout(LayoutKind.Sequential, CharSet=CharSet.Unicode)]
     public class DOCINFO { public string pDocName; public string pOutputFile; public string pDataType; }
 }
-'@;
-Add-Type -TypeDefinition $add -ErrorAction SilentlyContinue;
-if ([RawPrn]::OpenPrinter('${printer_name}', [ref]$h, [IntPtr]::Zero)) {
-    $di = New-Object RawPrn+DOCINFO; $di.pDocName = 'Receipt'; $di.pDataType = 'RAW';
-    if ([RawPrn]::StartDocPrinter($h, 1, $di)) {
-        if ([RawPrn]::StartPagePrinter($h)) {
-            $ptr = [System.Runtime.InteropServices.Marshal]::AllocCoTaskMem($b.Length);
-            [System.Runtime.InteropServices.Marshal]::Copy($b, 0, $ptr, $b.Length);
-            $w = 0; [RawPrn]::WritePrinter($h, $ptr, $b.Length, [ref]$w);
-            [System.Runtime.InteropServices.Marshal]::FreeCoTaskMem($ptr);
-            [RawPrn]::EndPagePrinter($h);
+'@
+    Add-Type -TypeDefinition $add -ErrorAction SilentlyContinue
+
+    if (-not [RawPrn]::OpenPrinter('${safePrinter}', [ref]$h, [IntPtr]::Zero)) {
+        throw "OpenPrinter failed for '${safePrinter}'"
+    }
+
+    $di = New-Object RawPrn+DOCINFO
+    $di.pDocName = 'Receipt'
+    $di.pDataType = 'RAW'
+
+    if (-not [RawPrn]::StartDocPrinter($h, 1, $di)) {
+        [RawPrn]::ClosePrinter($h)
+        throw "StartDocPrinter failed"
+    }
+
+    if (-not [RawPrn]::StartPagePrinter($h)) {
+        [RawPrn]::EndDocPrinter($h)
+        [RawPrn]::ClosePrinter($h)
+        throw "StartPagePrinter failed"
+    }
+
+    $ptr = [System.Runtime.InteropServices.Marshal]::AllocCoTaskMem($b.Length)
+    try {
+        [System.Runtime.InteropServices.Marshal]::Copy($b, 0, $ptr, $b.Length)
+        $w = 0
+        if (-not [RawPrn]::WritePrinter($h, $ptr, $b.Length, [ref]$w)) {
+            throw "WritePrinter failed"
         }
-        [RawPrn]::EndDocPrinter($h);
+    } finally {
+        [System.Runtime.InteropServices.Marshal]::FreeCoTaskMem($ptr)
+        [RawPrn]::EndPagePrinter($h)
+        [RawPrn]::EndDocPrinter($h)
+        [RawPrn]::ClosePrinter($h)
     }
-    [RawPrn]::ClosePrinter($h);
-}`;
 
-      const scriptBuffer = Buffer.from(rawScript, "utf16le");
-      const encodedScript = scriptBuffer.toString("base64");
+    Write-Output 'OK'
+} catch {
+    Write-Error $_.Exception.Message
+    exit 1
+}
+`;
 
-      exec(
-        `powershell -NoProfile -EncodedCommand ${encodedScript}`,
-        (error, stdout, stderr) => {
-          if (tempFilePath && fs.existsSync(tempFilePath)) {
-            try {
-              fs.unlinkSync(tempFilePath);
-            } catch (e) {}
-          }
+      runPowerShell(rawScript, (error, stdout, stderr) => {
+        if (tempFilePath && fs.existsSync(tempFilePath)) {
+          try {
+            fs.unlinkSync(tempFilePath);
+          } catch (e) {}
+        }
 
-          if (error) {
-            console.error("PowerShell RAW Spool Error:", error);
-            console.error("Stderr:", stderr);
-          } else {
-            console.log(
-              `Successfully spooled raw layout to Windows printer: ${printer_name}`,
-            );
-          }
-        },
-      );
+        if (error) {
+          console.error("PowerShell RAW Spool Error:", error.message);
+          console.error("Stderr:", stderr);
+          return res.status(500).json({
+            success: false,
+            error: error.message,
+            stderr: stderr ? stderr.trim() : undefined,
+          });
+        }
 
-      return res.json({
-        success: true,
-        message: `Spool command sent to ${printer_name}`,
+        console.log(
+          `Successfully spooled raw layout to Windows printer: ${printer_name}`,
+        );
+        return res.json({
+          success: true,
+          message: `Spool command sent to ${printer_name}`,
+        });
       });
-    } else {
-      await unixPrint.print(tempFilePath, printer_name);
 
-      if (tempFilePath && fs.existsSync(tempFilePath)) {
+      return;
+    }
+
+    // Non-Windows fallback
+    if (!unixPrint) {
+      return res.status(500).json({
+        success: false,
+        error: "unix-print module not available on this platform.",
+      });
+    }
+
+    await unixPrint.print(tempFilePath, printer_name);
+
+    if (tempFilePath && fs.existsSync(tempFilePath)) {
+      try {
         fs.unlinkSync(tempFilePath);
-      }
-
-      return res.json({
-        success: true,
-        message: `Successfully spooled to ${printer_name}`,
-      });
+      } catch (e) {}
     }
+
+    return res.json({
+      success: true,
+      message: `Successfully spooled to ${printer_name}`,
+    });
   } catch (error) {
     console.error("Printing Error:", error);
     if (tempFilePath && fs.existsSync(tempFilePath)) {
@@ -207,40 +279,56 @@ if ([RawPrn]::OpenPrinter('${printer_name}', [ref]$h, [IntPtr]::Zero)) {
   }
 });
 
+// ==========================================
+// LIST PRINTERS
+// ==========================================
 app.get("/printers", (req, res) => {
   if (os.platform() === "win32") {
     exec(
-      `powershell -Command "Get-CimInstance Win32_Printer | Select-Object -ExpandProperty Name"`,
+      `powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "Get-CimInstance Win32_Printer | Select-Object -ExpandProperty Name"`,
+      { timeout: 15000 },
       (error, stdout, stderr) => {
         if (error) {
           return res.status(500).json({ success: false, error: error.message });
         }
         const printerList = stdout
           .split(/\r?\n/)
-          .filter((name) => name.trim() !== "");
+          .map((n) => n.trim())
+          .filter((n) => n !== "");
         return res.json({ success: true, printers: printerList });
       },
     );
   } else {
-    exec("lpstat -e", (error, stdout, stderr) => {
+    exec("lpstat -e", (error, stdout) => {
       if (error) {
         return res.json({ success: true, printers: [] });
       }
       const printerList = stdout
         .split(/\r?\n/)
-        .filter((name) => name.trim() !== "");
+        .map((n) => n.trim())
+        .filter((n) => n !== "");
       return res.json({ success: true, printers: printerList });
     });
   }
 });
 
+// ==========================================
+// STATUS
+// ==========================================
 app.get("/status", (req, res) => {
-  res.json({ status: "online", platform: os.platform() });
+  res.json({
+    status: "online",
+    platform: os.platform(),
+    arch: os.arch(),
+    node: process.version,
+    windowsBuild: os.platform() === "win32" ? os.release() : undefined,
+  });
 });
 
 const PORT = 4444;
 app.listen(PORT, () => {
   console.log(`====================================================`);
   console.log(` Print & Display Agent Active on http://localhost:${PORT}`);
+  console.log(` Platform: ${os.platform()} | Node: ${process.version}`);
   console.log(`====================================================`);
 });
