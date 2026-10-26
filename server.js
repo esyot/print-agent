@@ -16,9 +16,6 @@ app.use(
 
 app.use(express.json({ limit: "100mb" }));
 
-// ==========================================
-// NEW: CUSTOMER DISPLAY ENDPOINT (COM3)
-// ==========================================
 app.post("/display", async (req, res) => {
   try {
     const { base64, text_line1, text_line2 } = req.body;
@@ -27,7 +24,7 @@ app.post("/display", async (req, res) => {
     if (base64) {
       rawBuffer = Buffer.from(base64, "base64");
     } else if (text_line1 !== undefined || text_line2 !== undefined) {
-      const clearScreen = Buffer.from([0x0c]); // Clear screen and home cursor
+      const clearScreen = Buffer.from([0x0c]);
 
       const line1 = (text_line1 || "").substring(0, 20).padEnd(20, " ");
       const line2 = (text_line2 || "").substring(0, 20).padEnd(20, " ");
@@ -96,9 +93,33 @@ $port.Close();
   }
 });
 
-// ==========================================
-// EXISTING: PRINTER LOGIC
-// ==========================================
+function listPrinters() {
+  return new Promise((resolve) => {
+    if (os.platform() === "win32") {
+      exec(
+        `powershell -Command "Get-CimInstance Win32_Printer | Select-Object -ExpandProperty Name"`,
+        (error, stdout) => {
+          if (error) return resolve([]);
+          const list = stdout
+            .split(/\r?\n/)
+            .map((n) => n.trim())
+            .filter(Boolean);
+          resolve(list);
+        },
+      );
+    } else {
+      exec("lpstat -a", (error, stdout) => {
+        if (error) return resolve([]);
+        const list = stdout
+          .split(/\r?\n/)
+          .map((line) => line.trim().split(/\s+/)[0])
+          .filter(Boolean);
+        resolve(list);
+      });
+    }
+  });
+}
+
 app.post("/print", async (req, res) => {
   let tempFilePath = null;
 
@@ -110,6 +131,29 @@ app.post("/print", async (req, res) => {
         success: false,
         error: "Missing printer_name or base64 payload.",
       });
+    }
+
+    if (os.platform() !== "win32") {
+      const available = await listPrinters();
+
+      if (available.length === 0) {
+        return res.status(400).json({
+          success: false,
+          error:
+            "No printers are configured on this machine. Add a printer via System Settings (macOS) or system-config-printer (Linux), then retry.",
+        });
+      }
+
+      const match = available.find(
+        (p) => p.toLowerCase() === printer_name.toLowerCase(),
+      );
+
+      if (!match) {
+        return res.status(400).json({
+          success: false,
+          error: `Printer "${printer_name}" not found. Available printers: ${available.join(", ")}.`,
+        });
+      }
     }
 
     const tempDir = os.tmpdir();
@@ -185,10 +229,34 @@ if ([RawPrn]::OpenPrinter('${printer_name}', [ref]$h, [IntPtr]::Zero)) {
         message: `Spool command sent to ${printer_name}`,
       });
     } else {
-      await unixPrint.print(tempFilePath, printer_name);
+      try {
+        await unixPrint.print(tempFilePath, printer_name);
+      } catch (printError) {
+        if (tempFilePath && fs.existsSync(tempFilePath)) {
+          try {
+            fs.unlinkSync(tempFilePath);
+          } catch (e) {}
+        }
+
+        const msg = (printError && printError.message) || String(printError);
+
+        if (msg.includes("No such file or directory")) {
+          const available = await listPrinters();
+          return res.status(400).json({
+            success: false,
+            error: `Printer "${printer_name}" is not available to CUPS. Available printers: ${
+              available.join(", ") || "none"
+            }.`,
+          });
+        }
+
+        return res.status(500).json({ success: false, error: msg });
+      }
 
       if (tempFilePath && fs.existsSync(tempFilePath)) {
-        fs.unlinkSync(tempFilePath);
+        try {
+          fs.unlinkSync(tempFilePath);
+        } catch (e) {}
       }
 
       return res.json({
@@ -207,30 +275,12 @@ if ([RawPrn]::OpenPrinter('${printer_name}', [ref]$h, [IntPtr]::Zero)) {
   }
 });
 
-app.get("/printers", (req, res) => {
-  if (os.platform() === "win32") {
-    exec(
-      `powershell -Command "Get-CimInstance Win32_Printer | Select-Object -ExpandProperty Name"`,
-      (error, stdout, stderr) => {
-        if (error) {
-          return res.status(500).json({ success: false, error: error.message });
-        }
-        const printerList = stdout
-          .split(/\r?\n/)
-          .filter((name) => name.trim() !== "");
-        return res.json({ success: true, printers: printerList });
-      },
-    );
-  } else {
-    exec("lpstat -e", (error, stdout, stderr) => {
-      if (error) {
-        return res.json({ success: true, printers: [] });
-      }
-      const printerList = stdout
-        .split(/\r?\n/)
-        .filter((name) => name.trim() !== "");
-      return res.json({ success: true, printers: printerList });
-    });
+app.get("/printers", async (req, res) => {
+  try {
+    const printers = await listPrinters();
+    return res.json({ success: true, printers });
+  } catch (error) {
+    return res.status(500).json({ success: false, error: error.message });
   }
 });
 
