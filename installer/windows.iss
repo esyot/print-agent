@@ -4,7 +4,7 @@
 ; Output:     installer\Output\PrintAgent-1.0.0-setup.exe
 
 #define AppName        "Silent Print Agent"
-#define AppVersion     "1.0.0"
+#define AppVersion     "1.0.1"
 #define AppPublisher   "Your Company"
 #define AppURL         "https://example.com"
 #define AppExeName     "print-agent.exe"
