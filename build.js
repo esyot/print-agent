@@ -5,7 +5,6 @@
  * Usage:
  *   node build.js                                   # default targets
  *   node build.js --targets=win-x64,mac-arm64
- *   node build.js --targets=win-x64,win-x86,mac-x64,mac-arm64
  *   node build.js --clean                           # wipe dist/ first
  *
  * Behavior:
@@ -21,7 +20,6 @@ const fs = require("fs");
 const path = require("path");
 const os = require("os");
 const crypto = require("crypto");
-const https = require("https");
 
 const ROOT = __dirname;
 const DIST = path.resolve(ROOT, "dist");
@@ -43,11 +41,10 @@ if (hasFlag("clean") && fs.existsSync(DIST)) {
 fs.mkdirSync(DIST, { recursive: true });
 
 // ---- target registry ----
-// node 14 is the newest pkg-supported runtime that can emit win-x86.
-// All others use node 18.
+// win-x86 has no prebuilt pkg binary anymore (404 from fetch server).
+// Dropped from all builds.
 const TARGETS = {
   "win-x64": { node: "node18", platform: "win", arch: "x64", ext: ".exe" },
-  "win-x86": { node: "node14", platform: "win", arch: "x86", ext: ".exe" },
   "win-arm64": { node: "node18", platform: "win", arch: "arm64", ext: ".exe" },
   "mac-x64": { node: "node18", platform: "macos", arch: "x64", ext: "" },
   "mac-arm64": { node: "node18", platform: "macos", arch: "arm64", ext: "" },
@@ -90,30 +87,32 @@ for (const name of requested) {
   }
 }
 
-// ---- Windows: download nssm.exe (service wrapper) ----
-// NSSM turns print-agent.exe into a Windows Service — runs in Session 0,
-// no console window, auto-starts at boot, auto-restarts on crash.
-if (built["win-x64"]) {
+// ---- Windows: NSSM service wrapper ----
+// NSSM turns print-agent.exe into a Windows Service.
+// Runs in Session 0, no console window, auto-starts at boot, auto-restarts on crash.
+if (built["win-x64"] || built["win-arm64"]) {
   const nssmPath = path.join(DIST, "nssm.exe");
+  const vendorNssm = path.join(ROOT, "vendor", "nssm.exe");
 
   if (fs.existsSync(nssmPath)) {
     console.log(
       `✅ nssm.exe already present → ${path.relative(ROOT, nssmPath)}`,
     );
-  } else {
+  } else if (fs.existsSync(vendorNssm)) {
+    fs.copyFileSync(vendorNssm, nssmPath);
+    console.log(`✅ nssm.exe (from vendor) → ${path.relative(ROOT, nssmPath)}`);
+  } else if (os.platform() === "win32") {
+    // Only attempt download on Windows (uses PowerShell)
     console.log(`\n▶ Downloading nssm.exe (Windows Service wrapper)`);
     try {
-      // NSSM 2.24 zip from nssm.cc — contains win64\nssm.exe and win32\nssm.exe
       const zipUrl = "https://nssm.cc/release/nssm-2.24.zip";
       const zipPath = path.join(DIST, "nssm.zip");
+      const extractPath = path.join(DIST, "nssm-extract");
 
       execSync(
         `powershell -NoProfile -Command "Invoke-WebRequest -Uri '${zipUrl}' -OutFile '${zipPath.replace(/'/g, "''")}'"`,
         { stdio: "inherit" },
       );
-
-      // Extract win64\nssm.exe to dist\nssm.exe
-      const extractPath = path.join(DIST, "nssm-extract");
       execSync(
         `powershell -NoProfile -Command "Expand-Archive -Path '${zipPath.replace(/'/g, "''")}' -DestinationPath '${extractPath.replace(/'/g, "''")}' -Force"`,
         { stdio: "inherit" },
@@ -127,15 +126,23 @@ if (built["win-x64"]) {
         console.warn(`⚠  nssm.exe not found in extracted archive`);
       }
 
-      // Cleanup temp files
       try {
         fs.rmSync(zipPath, { force: true });
         fs.rmSync(extractPath, { recursive: true, force: true });
       } catch (_) {}
     } catch (e) {
       console.error(`❌ nssm download failed:`, e.message);
-      console.error(`   The Windows installer will not work without nssm.exe.`);
+      console.error(`   Windows installer will not work without nssm.exe.`);
     }
+  } else {
+    // On macOS/Linux — can't download nssm.exe here, warn
+    console.warn(
+      `⚠  nssm.exe missing and cannot be downloaded on ${os.platform()}.`,
+    );
+    console.warn(
+      `   Download it once manually from https://nssm.cc/download and place`,
+    );
+    console.warn(`   it at vendor/nssm.exe in the repo.`);
   }
 }
 
@@ -197,9 +204,9 @@ if (Object.keys(built).length === 0) {
     );
   }
 }
-// Check nssm
-if (fs.existsSync(path.join(DIST, "nssm.exe"))) {
-  const st = fs.statSync(path.join(DIST, "nssm.exe"));
+const nssmFinal = path.join(DIST, "nssm.exe");
+if (fs.existsSync(nssmFinal)) {
+  const st = fs.statSync(nssmFinal);
   console.log(
     `  ${"nssm.exe".padEnd(15)} ${(st.size / 1024 / 1024).toFixed(1).padStart(6)} MB  nssm.exe`,
   );
