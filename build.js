@@ -12,7 +12,7 @@
  *   - Uses pkg to produce a standalone binary per target
  *   - If BOTH mac-x64 and mac-arm64 are built AND we're on macOS,
  *     merges them into a universal binary via `lipo`
- *   - If win-x64 is built, also writes a silent-launch VBS for the installer
+ *   - If win-x64 is built, downloads nssm.exe (Windows Service wrapper)
  *   - Writes dist/manifest.json with filename, sha256, size, version
  */
 
@@ -21,6 +21,7 @@ const fs = require("fs");
 const path = require("path");
 const os = require("os");
 const crypto = require("crypto");
+const https = require("https");
 
 const ROOT = __dirname;
 const DIST = path.resolve(ROOT, "dist");
@@ -89,23 +90,53 @@ for (const name of requested) {
   }
 }
 
-// ---- Windows VBS launcher (needed by installer/windows.iss) ----
+// ---- Windows: download nssm.exe (service wrapper) ----
+// NSSM turns print-agent.exe into a Windows Service — runs in Session 0,
+// no console window, auto-starts at boot, auto-restarts on crash.
 if (built["win-x64"]) {
-  const vbsPath = path.join(DIST, "print-agent-launcher.vbs");
-  const vbsContent = [
-    "' Silent launcher for Silent Print Agent",
-    "' Launches print-agent.exe hidden (no console window).",
-    "' A shortcut to this file lives in the Startup folder.",
-    'Set fso = CreateObject("Scripting.FileSystemObject")',
-    "scriptDir = fso.GetParentFolderName(WScript.ScriptFullName)",
-    'Set WshShell = CreateObject("WScript.Shell")',
-    'WshShell.Run """" & scriptDir & "\\print-agent.exe""", 0, False',
-    "Set WshShell = Nothing",
-    "Set fso = Nothing",
-    "",
-  ].join("\r\n");
-  fs.writeFileSync(vbsPath, vbsContent, "utf8");
-  console.log(`✅ VBS launcher → ${path.relative(ROOT, vbsPath)}`);
+  const nssmPath = path.join(DIST, "nssm.exe");
+
+  if (fs.existsSync(nssmPath)) {
+    console.log(
+      `✅ nssm.exe already present → ${path.relative(ROOT, nssmPath)}`,
+    );
+  } else {
+    console.log(`\n▶ Downloading nssm.exe (Windows Service wrapper)`);
+    try {
+      // NSSM 2.24 zip from nssm.cc — contains win64\nssm.exe and win32\nssm.exe
+      const zipUrl = "https://nssm.cc/release/nssm-2.24.zip";
+      const zipPath = path.join(DIST, "nssm.zip");
+
+      execSync(
+        `powershell -NoProfile -Command "Invoke-WebRequest -Uri '${zipUrl}' -OutFile '${zipPath.replace(/'/g, "''")}'"`,
+        { stdio: "inherit" },
+      );
+
+      // Extract win64\nssm.exe to dist\nssm.exe
+      const extractPath = path.join(DIST, "nssm-extract");
+      execSync(
+        `powershell -NoProfile -Command "Expand-Archive -Path '${zipPath.replace(/'/g, "''")}' -DestinationPath '${extractPath.replace(/'/g, "''")}' -Force"`,
+        { stdio: "inherit" },
+      );
+
+      const srcNssm = path.join(extractPath, "nssm-2.24", "win64", "nssm.exe");
+      if (fs.existsSync(srcNssm)) {
+        fs.copyFileSync(srcNssm, nssmPath);
+        console.log(`✅ nssm.exe → ${path.relative(ROOT, nssmPath)}`);
+      } else {
+        console.warn(`⚠  nssm.exe not found in extracted archive`);
+      }
+
+      // Cleanup temp files
+      try {
+        fs.rmSync(zipPath, { force: true });
+        fs.rmSync(extractPath, { recursive: true, force: true });
+      } catch (_) {}
+    } catch (e) {
+      console.error(`❌ nssm download failed:`, e.message);
+      console.error(`   The Windows installer will not work without nssm.exe.`);
+    }
+  }
 }
 
 // ---- macOS universal (only on macOS with both archs built) ----
@@ -165,5 +196,12 @@ if (Object.keys(built).length === 0) {
       `  ${k.padEnd(15)} ${(st.size / 1024 / 1024).toFixed(1).padStart(6)} MB  ${path.basename(v)}`,
     );
   }
+}
+// Check nssm
+if (fs.existsSync(path.join(DIST, "nssm.exe"))) {
+  const st = fs.statSync(path.join(DIST, "nssm.exe"));
+  console.log(
+    `  ${"nssm.exe".padEnd(15)} ${(st.size / 1024 / 1024).toFixed(1).padStart(6)} MB  nssm.exe`,
+  );
 }
 console.log("────────────────────────────────────────────────────\n");
