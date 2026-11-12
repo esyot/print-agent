@@ -12,6 +12,7 @@
  *   - Uses pkg to produce a standalone binary per target
  *   - If BOTH mac-x64 and mac-arm64 are built AND we're on macOS,
  *     merges them into a universal binary via `lipo`
+ *   - If win-x64 is built, also writes a silent-launch VBS for the installer
  *   - Writes dist/manifest.json with filename, sha256, size, version
  */
 
@@ -86,6 +87,25 @@ for (const name of requested) {
   } catch (e) {
     console.error(`❌ ${name} build failed:`, e.message);
   }
+}
+
+// ---- Windows VBS launcher (needed by installer/windows.iss) ----
+if (built["win-x64"]) {
+  const vbsPath = path.join(DIST, "print-agent-launcher.vbs");
+  const vbsContent = [
+    "' Silent launcher for Silent Print Agent",
+    "' Launches print-agent.exe hidden (no console window).",
+    "' A shortcut to this file lives in the Startup folder.",
+    'Set fso = CreateObject("Scripting.FileSystemObject")',
+    "scriptDir = fso.GetParentFolderName(WScript.ScriptFullName)",
+    'Set WshShell = CreateObject("WScript.Shell")',
+    'WshShell.Run """" & scriptDir & "\\print-agent.exe""", 0, False',
+    "Set WshShell = Nothing",
+    "Set fso = Nothing",
+    "",
+  ].join("\r\n");
+  fs.writeFileSync(vbsPath, vbsContent, "utf8");
+  console.log(`✅ VBS launcher → ${path.relative(ROOT, vbsPath)}`);
 }
 
 // ---- macOS universal (only on macOS with both archs built) ----
