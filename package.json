@@ -6,8 +6,23 @@
   "bin": "server.js",
   "scripts": {
     "start": "node server.js",
-    "build:win": "pkg . --targets node18-win-x64 --output dist/print-agent.exe",
-    "build:mac": "pkg . --targets node18-macos-x64 --output dist/print-agent"
+    "build": "node build.js",
+    "build:win-x64": "node build.js --targets=win-x64",
+    "build:win-x86": "node build.js --targets=win-x86",
+    "build:win-arm64": "node build.js --targets=win-arm64",
+    "build:mac-x64": "node build.js --targets=mac-x64",
+    "build:mac-arm64": "node build.js --targets=mac-arm64",
+    "build:mac-universal": "node build.js --targets=mac-x64,mac-arm64",
+    "build:linux-x64": "node build.js --targets=linux-x64",
+    "build:linux-arm64": "node build.js --targets=linux-arm64",
+    "build:all": "node build.js --targets=win-x64,win-x86,win-arm64,mac-x64,mac-arm64,linux-x64,linux-arm64"
+  },
+  "pkg": {
+    "scripts": [
+      "server.js"
+    ],
+    "assets": [],
+    "outputPath": "dist"
   },
   "dependencies": {
     "cors": "^2.8.5",
@@ -16,5 +31,22 @@
   },
   "devDependencies": {
     "pkg": "^5.8.1"
+  },
+  "overrides": {
+    "express": {
+      "qs": "6.16.1",
+      "body-parser": "1.20.9",
+      "proxy-addr": "2.0.8"
+    }
+  },
+  "engines": {
+    "node": ">=14.0.0"
+  },
+  "audit": {
+    "ignore": {
+      "GHSA-22r3-9w55-cj54": {
+        "reason": "pkg LPE is build-time-only; our build machines are single-user. Tracked for migration to Node SEA."
+      }
+    }
   }
 }
