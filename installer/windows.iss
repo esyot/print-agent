@@ -8,6 +8,7 @@
 #define AppPublisher   "Your Company"
 #define AppURL         "https://example.com"
 #define AppExeName     "print-agent.exe"
+#define AppVbsName     "print-agent-launcher.vbs"
 
 [Setup]
 AppId={{A1B2C3D4-0000-0000-0000-SILENTPRINT}}
@@ -30,7 +31,7 @@ UninstallDisplayIcon={app}\{#AppExeName}
 Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [Tasks]
-Name: "autostart"; Description: "Start agent automatically on login"; GroupDescription: "Startup:"
+Name: "autostart"; Description: "Start agent automatically on login (silent)"; GroupDescription: "Startup:"
 
 [Files]
 ; 64-bit binary
@@ -41,23 +42,26 @@ Source: "..\dist\print-agent-{#AppVersion}-win-x64.exe"; \
 Source: "..\dist\print-agent-{#AppVersion}-win-x86.exe"; \
   DestName: "{#AppExeName}"; DestDir: "{app}"; \
   Check: not IsWin64; Flags: ignoreversion
+; VBS launcher — runs the .exe hidden
+Source: "..\dist\{#AppVbsName}"; \
+  DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
 Name: "{group}\{#AppName}"; Filename: "{app}\{#AppExeName}"
 Name: "{group}\Uninstall {#AppName}"; Filename: "{uninstallexe}"
-
-[Registry]
-; Autostart (HKCU so it applies per user)
-Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; \
-  ValueType: string; ValueName: "SilentPrintAgent"; \
-  ValueData: """{app}\{#AppExeName}"""; \
-  Flags: uninsdeletevalue; Tasks: autostart
+; Startup-folder shortcut → wscript.exe + the VBS as argument (hidden launch)
+Name: "{userstartup}\{#AppName}"; \
+  Filename: "wscript.exe"; \
+  Parameters: """{app}\{#AppVbsName}"""; \
+  WorkingDir: "{app}"; \
+  IconFilename: "{app}\{#AppExeName}"; \
+  Comment: "Silent Print Agent (auto-start, hidden)"; \
+  Tasks: autostart
 
 [Run]
 Filename: "{app}\{#AppExeName}"; Description: "Start agent now"; \
   Flags: nowait postinstall skipifsilent
 
 [UninstallRun]
-; Kill the process before uninstall
 Filename: "taskkill.exe"; Parameters: "/F /IM {#AppExeName}"; \
   Flags: runhidden; RunOnceId: "KillAgent"
