@@ -2,7 +2,7 @@
 ; Inno Setup script — VBS-based silent autostart with verification.
 
 #define AppName        "Silent Print Agent"
-#define AppVersion     "1.0.2"
+#define AppVersion     "1.0.3"
 #define AppPublisher   "Your Company"
 #define AppURL         "https://example.com"
 #define AppExeName     "print-agent.exe"

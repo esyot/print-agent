@@ -1,6 +1,6 @@
 {
   "name": "silent-print-agent",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "description": "Silent local printing bridge for web applications",
   "main": "server.js",
   "bin": "server.js",
