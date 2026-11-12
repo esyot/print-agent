@@ -1,7 +1,7 @@
 ; installer/windows.iss
 ; Inno Setup script — builds a single .exe installer for Windows 8/10/11 (x86 + x64).
 ; Build with: iscc installer\windows.iss
-; Output:     installer\Output\PrintAgent-1.0.0-setup.exe
+; Output:     installer\Output\PrintAgent-1.0.1-setup.exe
 
 #define AppName        "Silent Print Agent"
 #define AppVersion     "1.0.1"
@@ -38,10 +38,10 @@ Name: "autostart"; Description: "Start agent automatically on login (silent)"; G
 Source: "..\dist\print-agent-{#AppVersion}-win-x64.exe"; \
   DestName: "{#AppExeName}"; DestDir: "{app}"; \
   Check: IsWin64; Flags: ignoreversion
-; 32-bit fallback
+; 32-bit fallback — skip silently if the binary wasn't built
 Source: "..\dist\print-agent-{#AppVersion}-win-x86.exe"; \
   DestName: "{#AppExeName}"; DestDir: "{app}"; \
-  Check: not IsWin64; Flags: ignoreversion
+  Check: not IsWin64; Flags: ignoreversion skipifsourcedoesntexist
 ; VBS launcher — runs the .exe hidden
 Source: "..\dist\{#AppVbsName}"; \
   DestDir: "{app}"; Flags: ignoreversion
